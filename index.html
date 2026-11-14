@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Vowel Quest — Multiplayer v2</title>
+<title>Vowel Quest — Multiplayer v3</title>
 <style>
 :root{--red:#b52f24;--yellow:#ffd84d;--cream:#fff8e8;--ink:#30251d;--line:#ead6b5}
 *{box-sizing:border-box}body{margin:0;background:var(--cream);color:var(--ink);font:16px system-ui,-apple-system,Segoe UI,sans-serif}
@@ -27,7 +27,7 @@ table{border-collapse:collapse;width:100%}td,th{padding:9px;border-bottom:1px so
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
 <body>
-<header><h1>ಕನ್ನಡ Vowel Quest · Multiplayer Preview</h1></header>
+<header><h1>ಕನ್ನಡ Vowel Quest · Multiplayer v3</h1></header>
 <main>
 <section class="panel" id="intro">
 <h2>Teacher or Student?</h2>
@@ -54,6 +54,7 @@ table{border-collapse:collapse;width:100%}td,th{padding:9px;border-bottom:1px so
 <div id="roomInfo" class="status hidden"></div>
 <div id="qrPanel" class="panel hidden"><h3>Student joining QR code</h3><div id="qrcode"></div><p class="muted" id="joinLink"></p><button class="secondary" onclick="copyJoinLink()">Copy student link</button></div>
 <div id="teacherControls" class="hidden"><button onclick="startGame()">Start game</button><button onclick="nextRound()">Next question</button><button class="secondary" onclick="closeRoom()">Close room</button></div>
+<div id="teacherQuestion" class="panel hidden"><h3>Current question</h3><p id="teacherRoundText">Waiting for the teacher to start…</p><p><strong>Correct answer:</strong> <span id="teacherCorrectAnswer">—</span></p><p><strong>Options shown to students:</strong> <span id="teacherOptions">—</span></p><p class="muted" id="teacherGameStatus">Room waiting</p></div>
 <div id="teacherStudents"></div>
 <button class="secondary" onclick="signOut()">Sign out</button>
 </section>
@@ -98,7 +99,7 @@ firebase.initializeApp(firebaseConfig);
 const auth=firebase.auth(), db=firebase.database();
 window.addEventListener("load",()=>{
   const pin=new URLSearchParams(location.search).get("join");
-  if(pin && /^\\d{6}$/.test(pin)){
+  if(pin && /^\d{6}$/.test(pin)){
     document.getElementById("roomPin").value=pin;
     show("studentJoin");
   }
@@ -106,7 +107,7 @@ window.addEventListener("load",()=>{
 let currentPin=null,currentUid=null,currentIndex=0,roomListener=null,studentListener=null,playedAudio=null,answered=false,order=[],currentJoinLink="";
 function show(id){document.querySelectorAll("main>section").forEach(x=>x.classList.add("hidden"));document.getElementById(id).classList.remove("hidden")}
 function msg(id,text){const el=document.getElementById(id);el.textContent=text;el.classList.remove("hidden")}
-function shuffle(a){return [...a].sort(()=>Math.random()-.5)}
+function shuffle(a){const x=[...a];for(let i=x.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[x[i],x[j]]=[x[j],x[i]];}return x;}
 async function teacherSignIn(){
   try{
     const cred=await auth.signInWithEmailAndPassword(document.getElementById("teacherEmail").value.trim(),document.getElementById("teacherPassword").value);
@@ -123,7 +124,7 @@ async function createRoom(){
     if(!pin)throw new Error("Could not find an unused PIN. Please try again.");
     const gameOrder=shuffle(vowels.map((_,i)=>i));
     const options={};
-    gameOrder.forEach((idx,round)=>{options[round]={prompt:"Listen and choose the vowel",audioClipIndex:idx,choices:shuffle(vowels.map((v,i)=>({v,i}))).slice(0,4).map(x=>({v:x.v,i:x.i}))};});
+    gameOrder.forEach((idx,round)=>{const distractors=shuffle(vowels.map((v,i)=>({v,i})).filter(x=>x.i!==idx)).slice(0,3);const choices=shuffle([{v:vowels[idx],i:idx},...distractors]);options[round]={prompt:"Listen and choose the vowel",audioClipIndex:idx,choices};});
     const payload={meta:{teacherUid:TEACHER_UID,open:true,status:"waiting",round:0,createdAt:firebase.database.ServerValue.TIMESTAMP},publicGame:{rounds:options},teacherOnly:{answerKey:gameOrder}};
     await db.ref("rooms/"+pin).set(payload);
     currentPin=pin;
@@ -162,6 +163,27 @@ function copyJoinLink(){
   if(currentJoinLink && navigator.clipboard){navigator.clipboard.writeText(currentJoinLink).then(()=>{document.getElementById("joinLink").textContent="Link copied: "+currentJoinLink;});}
 }
 function watchTeacher(pin){
+  const questionPanel=document.getElementById("teacherQuestion");
+  questionPanel.classList.remove("hidden");
+  db.ref("rooms/"+pin+"/meta").on("value",async snap=>{
+    const meta=snap.val()||{};
+    const round=Number(meta.round||0);
+    document.getElementById("teacherGameStatus").textContent="Room status: "+(meta.status||"waiting")+" · Round "+(round+1)+" of 15";
+    if(meta.status!=="playing"){
+      document.getElementById("teacherRoundText").textContent=meta.status==="finished"?"All questions completed.": "Waiting for you to start the game.";
+      document.getElementById("teacherCorrectAnswer").textContent="—";
+      document.getElementById("teacherOptions").textContent="—";
+      return;
+    }
+    const [gameSnap,keySnap]=await Promise.all([
+      db.ref("rooms/"+pin+"/publicGame/rounds/"+round).get(),
+      db.ref("rooms/"+pin+"/teacherOnly/answerKey/"+round).get()
+    ]);
+    const game=gameSnap.val(),key=keySnap.val();
+    document.getElementById("teacherRoundText").textContent=game?.prompt||"Question unavailable";
+    document.getElementById("teacherCorrectAnswer").textContent=Number.isInteger(key)?(vowels[key]+" ("+transliterations[key]+")"):"Not available";
+    document.getElementById("teacherOptions").textContent=game?.choices?.map(c=>c.v).join(" · ")||"—";
+  },e=>msg("roomInfo","Teacher question monitor: "+e.message));
   if(roomListener)roomListener.off();
   roomListener=db.ref("rooms/"+pin+"/studentPublic");
   roomListener.on("value",snap=>{
@@ -221,10 +243,17 @@ async function playCurrent(){
     const r=snap.val();
     if(!r || typeof r.audioClipIndex!=="number")throw new Error("Audio clip unavailable.");
     const clip=clips[r.audioClipIndex];
-    const audio=new Audio(audioData);
+    if(!clip)throw new Error("The selected audio clip does not exist.");
+    if(playedAudio){playedAudio.pause();playedAudio=null;}
+    const audio=new Audio(audioData);playedAudio=audio;
+    await new Promise((resolve,reject)=>{
+      if(audio.readyState>=1){resolve();return;}
+      audio.addEventListener("loadedmetadata",resolve,{once:true});
+      audio.addEventListener("error",()=>reject(new Error("The embedded recording could not be loaded.")),{once:true});
+    });
     audio.currentTime=clip[0];
     await audio.play();
-    setTimeout(()=>audio.pause(),(clip[1]-clip[0])*1000);
+    window.setTimeout(()=>{audio.pause();if(playedAudio===audio)playedAudio=null;},(clip[1]-clip[0])*1000);
   }catch(e){msg("studentFeedback","Audio could not play: "+e.message);}
 }
 async function signOut(){
