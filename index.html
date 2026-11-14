@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Vowel Quest — Multiplayer v3</title>
+<title>Vowel Quest — Final Results Edition</title>
 <style>
 :root{--red:#b52f24;--yellow:#ffd84d;--cream:#fff8e8;--ink:#30251d;--line:#ead6b5}
 *{box-sizing:border-box}body{margin:0;background:var(--cream);color:var(--ink);font:16px system-ui,-apple-system,Segoe UI,sans-serif}
@@ -20,6 +20,14 @@ button.secondary{background:#f3e9d8}button:disabled{opacity:.5;cursor:not-allowe
 .choice.correct{background:#e2f5e9;border-color:#32865a}.choice.wrong{background:#ffe6e1;border:2px solid #c44}
 table{border-collapse:collapse;width:100%}td,th{padding:9px;border-bottom:1px solid var(--line);text-align:left}
 @media(max-width:560px){main{padding:12px}.panel{padding:15px}header h1{font-size:20px}}
+
+#finalCelebration{position:fixed;inset:0;z-index:9999;background:linear-gradient(135deg,#fff3c4,#ffe08a);display:flex;align-items:center;justify-content:center;padding:20px;text-align:center;overflow:auto}
+#finalCelebration .celebrate-inner{width:min(900px,100%);background:#fff;border:4px solid #e8c56a;border-radius:28px;padding:28px;box-shadow:0 18px 60px #5d3b1b33}
+.podium{display:flex;align-items:end;justify-content:center;gap:12px;margin:26px auto;max-width:680px}
+.podium-place{flex:1;border-radius:16px 16px 8px 8px;padding:18px 8px;background:#fff1bd;min-width:0}
+.podium-place.first{background:#ffe082;min-height:190px}.podium-place.second{background:#e9edf2;min-height:150px}.podium-place.third{background:#f5d2b5;min-height:125px}
+.podium-name{font-size:clamp(17px,3vw,25px);font-weight:800;overflow-wrap:anywhere}.podium-score{font-size:22px;font-weight:800}.winner-table{width:100%;border-collapse:collapse;margin-top:15px}.winner-table th,.winner-table td{padding:10px;border-bottom:1px solid #ead6b5;text-align:left}
+@media(max-width:540px){#finalCelebration .celebrate-inner{padding:16px}.podium{gap:6px}.podium-place{padding:12px 4px}}
 </style>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
@@ -53,9 +61,9 @@ table{border-collapse:collapse;width:100%}td,th{padding:9px;border-bottom:1px so
 <button onclick="createRoom()">Create a new room</button>
 <div id="roomInfo" class="status hidden"></div>
 <div id="qrPanel" class="panel hidden"><h3>Student joining QR code</h3><div id="qrcode"></div><p class="muted" id="joinLink"></p><button class="secondary" onclick="copyJoinLink()">Copy student link</button></div>
-<div id="teacherControls" class="hidden"><button onclick="startGame()">Start game</button><button onclick="nextRound()">Next question</button><button class="secondary" onclick="closeRoom()">Close room</button></div>
+<div id="teacherControls" class="hidden"><button onclick="startGame()">Start game</button><button onclick="nextRound()">Next question</button><button onclick="finishGame()">Finish game & announce winners</button><button class="secondary" onclick="closeRoom()">Close room</button></div>
 <div id="teacherQuestion" class="panel hidden"><h3>Current question</h3><p id="teacherRoundText">Waiting for the teacher to start…</p><p><strong>Correct answer:</strong> <span id="teacherCorrectAnswer">—</span></p><p><strong>Options shown to students:</strong> <span id="teacherOptions">—</span></p><p class="muted" id="teacherGameStatus">Room waiting</p></div>
-<div id="teacherStudents"></div>
+<div id="teacherStudents"></div><div id="teacherFinalScores" class="panel hidden"><h3>Final scoreboard</h3><div id="teacherScoreTable"></div></div>
 <button class="secondary" onclick="signOut()">Sign out</button>
 </section>
 
@@ -79,6 +87,7 @@ table{border-collapse:collapse;width:100%}td,th{padding:9px;border-bottom:1px so
 <button class="secondary" onclick="signOut()">Leave</button>
 </section>
 </main>
+<div id="finalCelebration" class="hidden"><div class="celebrate-inner"><div style="font-size:48px">🏆 🎉 🏆</div><h1 style="color:#b52f24;font-size:clamp(30px,6vw,54px);margin:8px 0">Congratulations!</h1><p style="font-size:20px">Our Kannada Vowel Quest champions</p><div id="winnerPodium" class="podium"></div><p id="finalThanks" style="font-size:18px;font-weight:700">Well played, everyone!</p><button onclick="document.getElementById('finalCelebration').classList.add('hidden')">Close results</button></div></div>
 
 <script>
 const firebaseConfig = {
@@ -150,9 +159,53 @@ async function nextRound(){
   try{
     const snap=await db.ref("rooms/"+currentPin+"/meta").get(),meta=snap.val()||{};
     const next=(meta.round||0)+1;
-    if(next>=15){await db.ref("rooms/"+currentPin+"/meta").update({status:"finished"});document.getElementById("roomInfo").textContent="All 15 rounds completed.";}
+    if(next>=15){await db.ref("rooms/"+currentPin+"/meta").update({status:"awaitingResults",round:14});document.getElementById("roomInfo").textContent="All 15 questions completed. Click Finish game & announce winners.";}
     else{await db.ref("rooms/"+currentPin+"/meta").update({status:"playing",round:next});}
   }catch(e){msg("roomInfo","Could not move to next question: "+e.message);}
+}
+async function finishGame(){
+  if(!currentPin)return;
+  try{
+    const [playersSnap,answersSnap,keySnap]=await Promise.all([
+      db.ref("rooms/"+currentPin+"/studentPublic").get(),
+      db.ref("rooms/"+currentPin+"/answers").get(),
+      db.ref("rooms/"+currentPin+"/teacherOnly/answerKey").get()
+    ]);
+    const players=playersSnap.val()||{},answers=answersSnap.val()||{},keys=keySnap.val()||{};
+    const rows=Object.entries(players).map(([uid,player])=>{
+      const submitted=answers[uid]||{};let score=0,correct=0,attempted=0;
+      for(let q=0;q<15;q++){
+        const response=submitted[q];
+        if(response && Number.isInteger(Number(response.answer))){attempted++;if(Number(response.answer)===Number(keys[q])){score++;correct++;}}
+      }
+      return {uid,nickname:player.nickname||"Student",score,correct,attempted};
+    }).sort((a,b)=>b.score-a.score||a.nickname.localeCompare(b.nickname));
+    const winners=rows.slice(0,3).map((r,i)=>({place:i+1,nickname:r.nickname,score:r.score}));
+    const publicResults={winners,completedAt:firebase.database.ServerValue.TIMESTAMP};
+    await db.ref("rooms/"+currentPin).update({
+      results:publicResults,
+      teacherOnlyFinalScores:rows,
+      meta:{...(await db.ref("rooms/"+currentPin+"/meta").get()).val(),status:"finished",open:false,finishedAt:firebase.database.ServerValue.TIMESTAMP}
+    });
+    renderTeacherScores(rows);
+    document.getElementById("roomInfo").textContent="Game finished. Winners announced.";
+  }catch(e){msg("roomInfo","Could not calculate final results: "+e.message);}
+}
+function renderTeacherScores(rows){
+  const panel=document.getElementById("teacherFinalScores"),target=document.getElementById("teacherScoreTable");
+  panel.classList.remove("hidden");
+  if(!rows.length){target.textContent="No students joined this room.";return;}
+  target.innerHTML='<table class="winner-table"><thead><tr><th>Rank</th><th>Student</th><th>Score</th><th>Answered</th></tr></thead><tbody>'+rows.map((r,i)=>'<tr><td>'+(i+1)+'</td><td>'+escapeHtml(r.nickname)+'</td><td><strong>'+r.score+'/15</strong></td><td>'+r.attempted+'/15</td></tr>').join('')+'</tbody></table>';
+}
+function showWinners(results){
+  const winners=results?.winners||[];
+  const podium=document.getElementById("winnerPodium");
+  if(!winners.length){podium.innerHTML='<p>No scores were recorded.</p>';}
+  else{
+    const order=[winners.find(w=>w.place===2),winners.find(w=>w.place===1),winners.find(w=>w.place===3)].filter(Boolean);
+    podium.innerHTML=order.map(w=>'<div class="podium-place '+(w.place===1?'first':w.place===2?'second':'third')+'"><div style="font-size:32px">'+(w.place===1?'🥇':w.place===2?'🥈':'🥉')+'</div><div><strong>'+w.place+(w.place===1?'st':w.place===2?'nd':'rd')+'</strong></div><div class="podium-name">'+escapeHtml(w.nickname)+'</div><div class="podium-score">'+w.score+'/15</div></div>').join('');
+  }
+  document.getElementById("finalCelebration").classList.remove("hidden");
 }
 async function closeRoom(){
   if(!currentPin)return;
@@ -170,7 +223,7 @@ function watchTeacher(pin){
     const round=Number(meta.round||0);
     document.getElementById("teacherGameStatus").textContent="Room status: "+(meta.status||"waiting")+" · Round "+(round+1)+" of 15";
     if(meta.status!=="playing"){
-      document.getElementById("teacherRoundText").textContent=meta.status==="finished"?"All questions completed.": "Waiting for you to start the game.";
+      document.getElementById("teacherRoundText").textContent=(meta.status==="finished"||meta.status==="awaitingResults")?"All questions completed.": "Waiting for you to start the game.";
       document.getElementById("teacherCorrectAnswer").textContent="—";
       document.getElementById("teacherOptions").textContent="—";
       return;
@@ -213,9 +266,14 @@ function watchStudent(pin,uid){
   studentListener=db.ref("rooms/"+pin+"/meta");
   studentListener.on("value",async snap=>{
     const meta=snap.val();
-    if(!meta||meta.open!==true){document.getElementById("studentRoomStatus").textContent="The teacher has closed this room.";document.getElementById("studentGame").classList.add("hidden");return;}
+    if(!meta|| (meta.open!==true && meta.status!=="finished")){document.getElementById("studentRoomStatus").textContent="The teacher has closed this room.";document.getElementById("studentGame").classList.add("hidden");return;}
     if(meta.status==="playing"){currentIndex=meta.round||0;await renderStudentRound(pin,uid,currentIndex);}
-    else if(meta.status==="finished"){document.getElementById("studentRoomStatus").textContent="The game is complete. Thank you for playing!";document.getElementById("studentGame").classList.add("hidden");}
+    else if(meta.status==="finished"){
+      document.getElementById("studentRoomStatus").textContent="The game is complete. Thank you for playing!";
+      document.getElementById("studentGame").classList.add("hidden");
+      const resultSnap=await db.ref("rooms/"+pin+"/results").get();
+      showWinners(resultSnap.val());
+    }
     else{document.getElementById("studentRoomStatus").textContent="Waiting for the teacher to start…";document.getElementById("studentGame").classList.add("hidden");}
   },e=>msg("studentRoomStatus",e.message));
 }
